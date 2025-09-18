@@ -1,6 +1,7 @@
 Flask
 psycopg2-binary
-face-recognition
-opencv-python
-numpy
+face-recognition==1.3.0
+opencv-python==4.8.0.76
+numpy==1.24.4
+dlib==19.24.2
 gunicorn
