@@ -1,1 +1,0 @@
-load_known_faces

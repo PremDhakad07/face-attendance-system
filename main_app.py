@@ -2,7 +2,7 @@ import os
 import cv2
 import face_recognition
 import numpy as np
-import mysql.connector
+import psycopg2
 import glob
 import hashlib
 import time
@@ -18,69 +18,31 @@ import csv
 import io
 import json
 
-# --- MySQL Database Configuration ---
-DB_CONFIG = {
-    'host': os.environ.get('MYSQL_HOST'),
-    'user': os.environ.get('MYSQL_USER'),
-    'password': os.environ.get('MYSQL_PASSWORD'),
-    'database': os.environ.get('MYSQL_DATABASE')
-}
+# --- PostgreSQL Database Configuration ---
+# Use a single environment variable for the connection string
+DB_URL = os.environ.get('DATABASE_URL')
 
 # --- Teacher Password Configuration ---
-# The hash for the password 'vitbpl'
 TEACHER_PASSWORD_HASH = '38c2f17ffe9cc7c7e78e962581b0e49b178f129b4e9af1a79b18d440c0338306'
-
-# Time in seconds to wait before marking attendance for the same person again
 MIN_TIME_BETWEEN_ATTENDANCE = 43200
-
-# The tolerance for face recognition. Lower is stricter.
 FACE_RECOGNITION_TOLERANCE = 0.6
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
 
-# Add this line to increase the maximum request size to 60MB
 app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
 
-# Dictionary to store known faces and their encodings
-known_faces_data = {} # Stores {'reg_no': {'embedding': np.array, 'name': 'student name', 'last_marked': datetime}}
+known_faces_data = {}
 
 def get_db_connection():
-    """
-    Establishes a connection to the MySQL database.
-    Prompts the user for credentials only once if environment variables are not set.
-    """
-    global DB_CONFIG
-    
-    # Check if all required credentials are in the DB_CONFIG dictionary
-    required_keys = ['host', 'user', 'password', 'database']
-    missing_keys = [key for key in required_keys if not DB_CONFIG.get(key)]
-
-    if missing_keys:
-        print("-----------------------------------------------------")
-        print("Database credentials are not set.")
-        print("Please provide them now:")
-        print("-----------------------------------------------------")
-        try:
-            for key in missing_keys:
-                value = input(f"Enter a value for {key}: ")
-                DB_CONFIG[key] = value
-        except (KeyboardInterrupt, SystemExit):
-            print("\nSetup cancelled. Exiting.")
-            sys.exit(0)
-            
-    # Re-check for missing values after user input
-    re_check_missing_keys = [key for key in required_keys if not DB_CONFIG.get(key)]
-    if re_check_missing_keys:
-        print("\nDatabase credentials are still missing. Exiting.")
-        sys.exit(1)
-
+    """Establishes a connection to the PostgreSQL database."""
     try:
-        # Use the DB_CONFIG dictionary to connect
-        return mysql.connector.connect(**DB_CONFIG)
-    except mysql.connector.Error as err:
+        if not DB_URL:
+            print("Error: DATABASE_URL environment variable is not set.")
+            return None
+        return psycopg2.connect(DB_URL)
+    except psycopg2.Error as err:
         print(f"Database connection error: {err}")
-        print("Please check your database credentials and ensure the MySQL server is running.")
         return None
 
 def load_known_faces():
@@ -99,7 +61,6 @@ def load_known_faces():
         
         for reg_no, name, embedding_blob, last_time in results:
             try:
-                # Convert the blob back to a numpy array
                 embedding_array = np.frombuffer(embedding_blob, dtype=np.float64)
                 known_faces_data[reg_no] = {
                     'name': name,
@@ -111,17 +72,15 @@ def load_known_faces():
                 continue
         
         print(f"Loaded {len(known_faces_data)} student faces from the database.")
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Error loading faces from database: {err}")
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
 def mark_attendance(reg_no, current_time):
-    """
-    Marks attendance for a student by updating the database.
-    """
+    """Marks attendance for a student by updating the database."""
     conn = get_db_connection()
     if not conn:
         return
@@ -129,21 +88,19 @@ def mark_attendance(reg_no, current_time):
     try:
         cursor = conn.cursor()
         
-        # Update the student's total attendance and last_attendance_time
         sql_update_student = "UPDATE students SET total_attendance = total_attendance + 1, last_attendance_time = %s WHERE registration_number = %s"
         cursor.execute(sql_update_student, (current_time, reg_no))
         
-        # Insert a new attendance log record
         sql_insert_log = "INSERT INTO attendance_log (registration_number, timestamp) VALUES (%s, %s)"
         cursor.execute(sql_insert_log, (reg_no, current_time))
         
         conn.commit()
         print(f"Attendance marked for {known_faces_data[reg_no]['name']} ({reg_no})")
         
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Error updating attendance: {err}")
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
@@ -153,12 +110,12 @@ load_known_faces()
 
 # --- Utility Functions ---
 def generate_frames():
+    # ... (rest of the function is unchanged)
     camera = cv2.VideoCapture(0)
     if not camera.isOpened():
         print("Error: Could not open camera.")
         return
 
-    # Pre-calculate a list of known face embeddings for faster comparison
     known_face_embeddings = [data['embedding'] for data in known_faces_data.values()]
     known_student_ids = list(known_faces_data.keys())
     
@@ -196,18 +153,13 @@ def generate_frames():
                             name = student_info['name']
                             now = datetime.now()
                             
-                            # Check the last marked time from the in-memory cache
                             last_marked_time = student_info.get('last_marked')
                             
                             if not last_marked_time or (now - last_marked_time).total_seconds() > MIN_TIME_BETWEEN_ATTENDANCE:
-                                # Update the in-memory cache immediately
                                 student_info['last_marked'] = now
-                                # Call the database update function
                                 mark_attendance(matched_reg_no, now)
 
-                # Draw a box around the face
                 cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                # Draw a label with the name
                 cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 255, 0), cv2.FILLED)
                 font = cv2.FONT_HERSHEY_DUPLEX
                 cv2.putText(frame, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
@@ -217,7 +169,6 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
     
-    # Ensure camera is released when the loop breaks
     camera.release()
     print("Camera released.")
 
@@ -261,18 +212,20 @@ def manage_students():
     
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure MySQL is running and credentials are correct.", 500
+        return "Database connection error. Please ensure PostgreSQL is running and credentials are correct.", 500
 
     students = []
     try:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT registration_number, name, major, year, starting_year, total_attendance FROM students")
         students = cursor.fetchall()
-    except mysql.connector.Error as err:
+        # Convert DictRow objects to dictionaries for easier access in template
+        students = [dict(student) for student in students]
+    except psycopg2.Error as err:
         print(f"Error fetching students: {err}")
         return f"An error occurred while fetching student data: {err}", 500
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
@@ -293,10 +246,8 @@ def add_student():
         image_data = None
         img = None
         
-        # Check for image data from camera first
         if 'camera_image_data' in request.form and request.form['camera_image_data']:
             image_data = request.form['camera_image_data']
-            # Decode the image from base64
             try:
                 header, encoded_data = image_data.split(',', 1)
                 image_bytes = base64.b64decode(encoded_data)
@@ -305,7 +256,6 @@ def add_student():
             except Exception as e:
                 print(f"Error decoding camera image data: {e}")
                 return jsonify({'success': False, 'message': 'Failed to decode camera image data. Please try again.'}), 400
-        # Then check for file upload
         elif 'face_image' in request.files and request.files['face_image'].filename != '':
             file = request.files['face_image']
             try:
@@ -319,44 +269,36 @@ def add_student():
         if img is None:
             return jsonify({'success': False, 'message': 'Failed to process image. Please ensure the image is valid.'}), 400
         
-        # Find faces in the captured image
         face_locations = face_recognition.face_locations(img)
         if not face_locations:
             return jsonify({'success': False, 'message': 'No face found in the image. Please try again.'}), 400
 
-        # Encode the face
         face_encoding = face_recognition.face_encodings(img, face_locations)[0]
         
         conn = get_db_connection()
         if not conn:
-            return jsonify({'success': False, 'message': 'Database connection error. Please ensure MySQL is running.'}), 500
+            return jsonify({'success': False, 'message': 'Database connection error. Please ensure PostgreSQL is running.'}), 500
         
         try:
             cursor = conn.cursor()
-            
-            # Save the face encoding and student data
             sql = "INSERT INTO students (registration_number, name, major, year, starting_year, face_embedding) VALUES (%s, %s, %s, %s, %s, %s)"
-            # Convert the numpy array to bytes for storage in MySQL BLOB
             embedding_bytes = face_encoding.astype(np.float64).tobytes()
-            cursor.execute(sql, (reg_no, name, major, year, starting_year, embedding_bytes))
+            cursor.execute(sql, (reg_no, name, major, year, starting_year, psycopg2.Binary(embedding_bytes)))
             conn.commit()
             
             print("Student added successfully!")
-            
-            # After adding, reload known faces to update the in-memory cache
             load_known_faces()
             
-            # Return a JSON response with a success message and redirect URL
             return jsonify({'success': True, 'message': 'Student added successfully!', 'redirect_url': url_for('teacher_menu')})
             
-        except mysql.connector.Error as err:
-            if err.errno == 1062: # Duplicate entry error
+        except psycopg2.Error as err:
+            if err.pgcode == '23505': # PostgreSQL code for unique violation
                 return jsonify({'success': False, 'message': f"Error: Registration number {reg_no} already exists."}), 409
             else:
                 print(f"Database error: {err}")
                 return jsonify({'success': False, 'message': f"An unexpected error occurred: {err}"}), 500
         finally:
-            if conn and conn.is_connected():
+            if conn and not conn.closed:
                 cursor.close()
                 conn.close()
                 
@@ -370,18 +312,20 @@ def edit_student(reg_no):
 
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure MySQL is running.", 500
+        return "Database connection error. Please ensure PostgreSQL is running.", 500
 
     student = None
     try:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT * FROM students WHERE registration_number = %s", (reg_no,))
         student = cursor.fetchone()
-    except mysql.connector.Error as err:
+        if student:
+            student = dict(student)
+    except psycopg2.Error as err:
         print(f"Error fetching student data: {err}")
         return f"An error occurred while fetching student data: {err}", 500
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
@@ -396,7 +340,7 @@ def edit_student(reg_no):
 
         conn_update = get_db_connection()
         if not conn_update:
-            return "Database connection error. Please ensure MySQL is running.", 500
+            return "Database connection error. Please ensure PostgreSQL is running.", 500
         
         try:
             cursor_update = conn_update.cursor()
@@ -404,11 +348,11 @@ def edit_student(reg_no):
             cursor_update.execute(sql, (name, major, year, starting_year, reg_no))
             conn_update.commit()
             return redirect(url_for('manage_students'))
-        except mysql.connector.Error as err:
+        except psycopg2.Error as err:
             print(f"Error updating student data: {err}")
             return f"An error occurred while updating the student: {err}", 500
         finally:
-            if conn_update and conn_update.is_connected():
+            if conn_update and not conn_update.closed:
                 cursor_update.close()
                 conn_update.close()
 
@@ -422,26 +366,22 @@ def delete_student(reg_no):
 
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure MySQL is running.", 500
+        return "Database connection error. Please ensure PostgreSQL is running.", 500
 
     try:
         cursor = conn.cursor()
         
-        # First, delete associated records in the attendance_log table
         cursor.execute("DELETE FROM attendance_log WHERE registration_number = %s", (reg_no,))
-        
-        # Then, delete the student from the students table
         cursor.execute("DELETE FROM students WHERE registration_number = %s", (reg_no,))
         conn.commit()
         
-        # After deleting, reload known faces to remove the entry from the in-memory cache
         load_known_faces()
         
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Error deleting student: {err}")
         return f"An error occurred while deleting the student: {err}", 500
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
@@ -462,7 +402,7 @@ def get_latest_attendance():
         return jsonify({'error': 'Database connection error.'}), 500
 
     try:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         sql = """
         SELECT s.name, s.registration_number AS reg_no, al.timestamp
         FROM attendance_log al
@@ -473,16 +413,17 @@ def get_latest_attendance():
         cursor.execute(sql)
         latest_attendance = cursor.fetchall()
         
-        # Format the timestamp to a more readable string if needed
+        latest_attendance = [dict(row) for row in latest_attendance]
+        
         for row in latest_attendance:
             row['timestamp'] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
             
         return jsonify(latest_attendance)
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Error fetching latest attendance log: {err}")
         return jsonify({'error': 'An error occurred fetching data.'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
@@ -490,27 +431,16 @@ def get_latest_attendance():
 def shutdown():
     print("Shutting down the server...")
     
-    # Send a signal to the current process
     os.kill(os.getpid(), signal.SIGINT)
-    
-    print("Attempting to terminate parent process...")
     
     parent_pid = os.getppid()
     try:
         parent = psutil.Process(parent_pid)
         if parent:
-            parent.terminate() # Request termination
-            parent.wait(timeout=3) # Wait for parent to terminate (optional timeout)
-            print(f"Parent process with PID {parent_pid} terminated successfully using psutil.")
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        print(f"Parent process with PID {parent_pid} not found or access denied. It may have already terminated.")
-    except psutil.TimeoutExpired:
-        print(f"Parent process with PID {parent_pid} did not terminate within timeout. Forcing kill.")
-        try:
-            parent.kill() # Force kill if terminate didn't work
-            print(f"Parent process with PID {parent_pid} forcefully terminated.")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            print(f"Could not forcefully terminate parent process with PID {parent_pid}.")
+            parent.terminate()
+            parent.wait(timeout=3)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+        pass
     except Exception as e:
         print(f"An unexpected error occurred during termination: {e}")
         
@@ -530,20 +460,16 @@ def export_students_csv():
         return "Database connection error.", 500
     
     try:
-        cursor = conn.cursor(dictionary=True)
-        # Fetch all student data except for the face_embedding, which is not needed for the CSV
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT registration_number, name, major, year, starting_year, total_attendance FROM students")
         students = cursor.fetchall()
         
-        # Use a BytesIO buffer to write the CSV data to memory
         output = io.StringIO()
         writer = csv.writer(output)
         
-        # Write the header row
         header = ['Registration Number', 'Name', 'Major', 'Year', 'Starting Year', 'Total Attendance']
         writer.writerow(header)
         
-        # Write the data rows
         for student in students:
             writer.writerow([
                 student['registration_number'],
@@ -554,10 +480,8 @@ def export_students_csv():
                 student['total_attendance']
             ])
             
-        # Get the string value from the buffer
         csv_data = output.getvalue()
         
-        # Create a Flask Response with the CSV data
         response = Response(
             csv_data,
             mimetype="text/csv",
@@ -565,16 +489,14 @@ def export_students_csv():
         )
         return response
         
-    except mysql.connector.Error as err:
+    except psycopg2.Error as err:
         print(f"Error exporting data to CSV: {err}")
         return "An error occurred while exporting data.", 500
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             cursor.close()
             conn.close()
 
 if __name__ == '__main__':
-    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        print("Starting Flask server and opening browser...")
-        time.sleep(2)
-    app.run()
+    # Remove webbrowser.open() for production
+    app.run(debug=True)
