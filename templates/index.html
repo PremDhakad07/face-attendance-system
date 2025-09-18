@@ -1,17 +1,153 @@
-{% extends "base.html" %}
-
-{% block title %}Live Attendance{% endblock %}
-
-{% block content %}
-    <h2>Live Attendance Feed</h2>
-    <div style="position: relative; text-align: center; margin-bottom: 20px;">
-        <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Live video feed">
-        <p id="status-message" style="margin-top: 10px;"></p>
-    </div>
-    
-    <div class="log-container">
-        <h3>Latest Attendance Log</h3>
-        <div id="log-list">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance System</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        .container {
+            margin-top: 50px;
+        }
+        #videoElement {
+            transform: scaleX(-1);
+            width: 100%;
+            height: auto;
+        }
+        #processedImage {
+            width: 100%;
+            height: auto;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: auto;
+        }
+        .video-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            font-size: 1.5rem;
+            text-align: center;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center">Student Attendance System</h1>
+        <div class="row mt-4">
+            <div class="col-md-6 text-center">
+                <h2>Live Feed</h2>
+                <div class="video-container">
+                    <video id="videoElement" autoplay></video>
+                    <div id="video-overlay" class="video-overlay" style="display: none;">
+                        Accessing Webcam...
+                    </div>
+                </div>
             </div>
+            <div class="col-md-6">
+                <h2>Attendance Log</h2>
+                <div id="attendance-log-container">
+                    <ul class="list-group" id="attendance-list"></ul>
+                </div>
+            </div>
+        </div>
     </div>
-{% endblock %}
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script>
+        const video = document.getElementById('videoElement');
+        const overlay = document.getElementById('video-overlay');
+        const attendanceList = document.getElementById('attendance-list');
+        let stream = null;
+        let lastTimestamp = 0;
+        const FPS = 10; // Frames per second to send to server
+        const frameInterval = 1000 / FPS;
+
+        async function initCamera() {
+            try {
+                overlay.style.display = 'flex';
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                overlay.style.display = 'none';
+
+                video.addEventListener('play', () => {
+                    sendFrame();
+                    setInterval(updateAttendanceLog, 3000); // Poll for latest attendance every 3 seconds
+                });
+            } catch (err) {
+                console.error("Error accessing the camera: ", err);
+                overlay.innerText = "Error accessing the camera. Please ensure it is connected and allowed.";
+            }
+        }
+
+        function sendFrame() {
+            if (video.paused || video.ended || !stream) {
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const imageData = canvas.toDataURL('image/jpeg');
+
+            fetch('/process_frame', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ frame: imageData })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.frame) {
+                    video.src = 'data:image/jpeg;base64,' + data.frame;
+                }
+            })
+            .catch(error => {
+                console.error('Error processing frame:', error);
+            });
+
+            setTimeout(sendFrame, frameInterval);
+        }
+
+        function updateAttendanceLog() {
+            fetch('/get_latest_attendance')
+                .then(response => response.json())
+                .then(data => {
+                    attendanceList.innerHTML = '';
+                    if (data && data.length > 0) {
+                        data.forEach(log => {
+                            const listItem = document.createElement('li');
+                            listItem.className = 'list-group-item';
+                            listItem.innerText = `${log.name} (${log.reg_no}) - ${log.timestamp}`;
+                            attendanceList.appendChild(listItem);
+                        });
+                    } else {
+                        attendanceList.innerHTML = '<li class="list-group-item">No attendance recorded yet.</li>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching attendance log:', error);
+                });
+        }
+
+        initCamera();
+
+        window.addEventListener('beforeunload', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>
