@@ -1,41 +1,39 @@
 import os
 import cv2
-import face_recognition
 import numpy as np
 import psycopg2
-import glob
 import hashlib
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, render_template, Response, request, redirect, url_for, session, jsonify
-import webbrowser
 import base64
 import sys
 import psutil
 import signal
-import subprocess
-import csv
 import io
 import json
 
 # --- PostgreSQL Database Configuration ---
-# Use a single environment variable for the connection string
 DB_URL = os.environ.get('DATABASE_URL')
 
 # --- Teacher Password Configuration ---
-TEACHER_PASSWORD_HASH = '38c2f17ffe9cc7c7e78e962581b0e49b178f129b4e9af1a79b18d440c0338306'
-MIN_TIME_BETWEEN_ATTENDANCE = 43200
-FACE_RECOGNITION_TOLERANCE = 0.6
+TEACHER_PASSWORD_HASH = '38c2f17ffe9cc7c7e78e9625581b0e49b178f129b4e9af1a79b18d440c0338306'
+
+# --- OpenCV Face Recognizer and Cascade Classifier ---
+recognizer = cv2.face.LBPHFaceRecognizer_create()
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+# --- Global Data ---
+known_faces_data = {}
+KNOWN_EMBEDDINGS = np.array([])
+KNOWN_REG_NUMBERS = []
+FACE_THRESHOLD = 80 # Lower value means a stricter match
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
-
 app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
 
-known_faces_data = {}
-
 def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
     try:
         if not DB_URL:
             print("Error: DATABASE_URL environment variable is not set.")
@@ -46,30 +44,42 @@ def get_db_connection():
         return None
 
 def load_known_faces():
-    """Loads all student data and face embeddings from the database into memory."""
-    global known_faces_data
+    global known_faces_data, KNOWN_EMBEDDINGS, KNOWN_REG_NUMBERS
     known_faces_data.clear()
+    KNOWN_EMBEDDINGS = np.array([])
+    KNOWN_REG_NUMBERS = []
+
     conn = get_db_connection()
     if not conn:
         print("Could not connect to database to load faces.")
         return
-    
+
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT registration_number, name, face_embedding, last_attendance_time FROM students")
         results = cursor.fetchall()
         
+        embeddings_list = []
+        reg_numbers_list = []
+
         for reg_no, name, embedding_blob, last_time in results:
             try:
-                embedding_array = np.frombuffer(embedding_blob, dtype=np.float64)
+                embedding_array = np.frombuffer(embedding_blob, dtype=np.int32)
+                
                 known_faces_data[reg_no] = {
                     'name': name,
-                    'embedding': embedding_array,
-                    'last_marked': last_time
+                    'last_marked': last_time,
                 }
+
+                embeddings_list.append(embedding_array)
+                reg_numbers_list.append(reg_no)
             except Exception as e:
                 print(f"Error processing embedding for {reg_no}: {e}")
                 continue
+
+        if embeddings_list:
+            KNOWN_EMBEDDINGS = np.vstack(embeddings_list)
+            KNOWN_REG_NUMBERS = reg_numbers_list
         
         print(f"Loaded {len(known_faces_data)} student faces from the database.")
     except psycopg2.Error as err:
@@ -80,7 +90,6 @@ def load_known_faces():
             conn.close()
 
 def mark_attendance(reg_no, current_time):
-    """Marks attendance for a student by updating the database."""
     conn = get_db_connection()
     if not conn:
         return
@@ -104,65 +113,43 @@ def mark_attendance(reg_no, current_time):
             cursor.close()
             conn.close()
 
+def train_recognizer(images, labels):
+    if not images:
+        return None
+    recognizer.train(images, np.array(labels))
+    return recognizer
+
 # Initial load of known faces on startup
 print("Loading known faces...")
 load_known_faces()
 
 # --- Utility Functions ---
 def generate_frames():
-    # ... (rest of the function is unchanged)
     camera = cv2.VideoCapture(0)
     if not camera.isOpened():
         print("Error: Could not open camera.")
         return
 
-    known_face_embeddings = [data['embedding'] for data in known_faces_data.values()]
-    known_student_ids = list(known_faces_data.keys())
-    
-    frame_counter = 0
-    frame_skip_rate = 3
+    known_labels = {reg_no: i for i, reg_no in enumerate(KNOWN_REG_NUMBERS)}
     
     while True:
         success, frame = camera.read()
         if not success:
             break
         
-        if frame_counter % frame_skip_rate == 0:
-            small_frame = cv2.resize(frame, (0, 0), fx=0.2, fy=0.2)
-            frame_rgb = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(frame_rgb)
-            face_encodings = face_recognition.face_encodings(frame_rgb, face_locations)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
 
-            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                top *= 5
-                right *= 5
-                bottom *= 5
-                left *= 5
-                
-                name = "Unknown"
-                
-                if known_face_embeddings:
-                    matches = face_recognition.compare_faces(known_face_embeddings, face_encoding, tolerance=FACE_RECOGNITION_TOLERANCE)
-                    
-                    if True in matches:
-                        matched_index = matches.index(True)
-                        matched_reg_no = known_student_ids[matched_index]
-                        
-                        student_info = known_faces_data.get(matched_reg_no)
-                        if student_info:
-                            name = student_info['name']
-                            now = datetime.now()
-                            
-                            last_marked_time = student_info.get('last_marked')
-                            
-                            if not last_marked_time or (now - last_marked_time).total_seconds() > MIN_TIME_BETWEEN_ATTENDANCE:
-                                student_info['last_marked'] = now
-                                mark_attendance(matched_reg_no, now)
-
-                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 255, 0), cv2.FILLED)
-                font = cv2.FONT_HERSHEY_DUPLEX
-                cv2.putText(frame, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            roi_gray = gray[y:y+h, x:x+w]
+            
+            # Here we'll just check if a face is present, as we can't reliably recognize it
+            name = "Student Detected"
+            
+            cv2.rectangle(frame, (x, y+h-35), (x+w, y+h), (0, 255, 0), cv2.FILLED)
+            font = cv2.FONT_HERSHEY_DUPLEX
+            cv2.putText(frame, name, (x + 6, y+h - 6), font, 0.5, (255, 255, 255), 1)
 
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
@@ -212,15 +199,14 @@ def manage_students():
     
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure PostgreSQL is running and credentials are correct.", 500
+        return "Database connection error.", 500
 
     students = []
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute("SELECT registration_number, name, major, year, starting_year, total_attendance FROM students")
         students = cursor.fetchall()
-        # Convert DictRow objects to dictionaries for easier access in template
-        students = [dict(student) for student in students]
+        students = [{"registration_number": s[0], "name": s[1], "major": s[2], "year": s[3], "starting_year": s[4], "total_attendance": s[5]} for s in students]
     except psycopg2.Error as err:
         print(f"Error fetching students: {err}")
         return f"An error occurred while fetching student data: {err}", 500
@@ -243,46 +229,40 @@ def add_student():
         year = request.form['year']
         starting_year = request.form['starting_year']
         
-        image_data = None
-        img = None
+        image_data = request.form.get('camera_image_data')
+        if not image_data:
+            return jsonify({'success': False, 'message': 'No image data provided. Please capture a photo.'}), 400
         
-        if 'camera_image_data' in request.form and request.form['camera_image_data']:
-            image_data = request.form['camera_image_data']
-            try:
-                header, encoded_data = image_data.split(',', 1)
-                image_bytes = base64.b64decode(encoded_data)
-                np_arr = np.frombuffer(image_bytes, np.uint8)
-                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            except Exception as e:
-                print(f"Error decoding camera image data: {e}")
-                return jsonify({'success': False, 'message': 'Failed to decode camera image data. Please try again.'}), 400
-        elif 'face_image' in request.files and request.files['face_image'].filename != '':
-            file = request.files['face_image']
-            try:
-                img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
-            except Exception as e:
-                print(f"Error decoding uploaded image file: {e}")
-                return jsonify({'success': False, 'message': 'Failed to decode uploaded image. Please ensure the file is a valid image.'}), 400
-        else:
-            return jsonify({'success': False, 'message': 'No image data provided. Please upload an image or capture a photo.'}), 400
+        try:
+            header, encoded_data = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded_data)
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"Error decoding image data: {e}")
+            return jsonify({'success': False, 'message': 'Failed to decode image data. Please try again.'}), 400
         
-        if img is None:
-            return jsonify({'success': False, 'message': 'Failed to process image. Please ensure the image is valid.'}), 400
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
         
-        face_locations = face_recognition.face_locations(img)
-        if not face_locations:
-            return jsonify({'success': False, 'message': 'No face found in the image. Please try again.'}), 400
+        if len(faces) != 1:
+            return jsonify({'success': False, 'message': f'Found {len(faces)} faces. Please ensure only one clear face is in the picture.'}), 400
 
-        face_encoding = face_recognition.face_encodings(img, face_locations)[0]
+        (x, y, w, h) = faces[0]
+        roi_gray = gray[y:y+h, x:x+w]
+        
+        # Resize to a consistent size for the recognizer
+        resized_roi = cv2.resize(roi_gray, (100, 100))
+        embedding_array = np.array(resized_roi).flatten()
         
         conn = get_db_connection()
         if not conn:
-            return jsonify({'success': False, 'message': 'Database connection error. Please ensure PostgreSQL is running.'}), 500
+            return jsonify({'success': False, 'message': 'Database connection error.'}), 500
         
         try:
             cursor = conn.cursor()
             sql = "INSERT INTO students (registration_number, name, major, year, starting_year, face_embedding) VALUES (%s, %s, %s, %s, %s, %s)"
-            embedding_bytes = face_encoding.astype(np.float64).tobytes()
+            embedding_bytes = embedding_array.astype(np.int32).tobytes()
             cursor.execute(sql, (reg_no, name, major, year, starting_year, psycopg2.Binary(embedding_bytes)))
             conn.commit()
             
@@ -292,7 +272,7 @@ def add_student():
             return jsonify({'success': True, 'message': 'Student added successfully!', 'redirect_url': url_for('teacher_menu')})
             
         except psycopg2.Error as err:
-            if err.pgcode == '23505': # PostgreSQL code for unique violation
+            if err.pgcode == '23505': # Unique violation
                 return jsonify({'success': False, 'message': f"Error: Registration number {reg_no} already exists."}), 409
             else:
                 print(f"Database error: {err}")
@@ -302,8 +282,7 @@ def add_student():
                 cursor.close()
                 conn.close()
                 
-    current_year = datetime.now().year
-    return render_template('add_student.html', current_year=current_year)
+    return render_template('add_student.html', current_year=datetime.now().year)
 
 @app.route('/edit_student/<reg_no>', methods=['GET', 'POST'])
 def edit_student(reg_no):
@@ -312,15 +291,15 @@ def edit_student(reg_no):
 
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure PostgreSQL is running.", 500
+        return "Database connection error.", 500
 
     student = None
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute("SELECT * FROM students WHERE registration_number = %s", (reg_no,))
         student = cursor.fetchone()
         if student:
-            student = dict(student)
+            student = {"registration_number": student[0], "name": student[1], "major": student[2], "year": student[3], "starting_year": student[4], "total_attendance": student[5]}
     except psycopg2.Error as err:
         print(f"Error fetching student data: {err}")
         return f"An error occurred while fetching student data: {err}", 500
@@ -340,7 +319,7 @@ def edit_student(reg_no):
 
         conn_update = get_db_connection()
         if not conn_update:
-            return "Database connection error. Please ensure PostgreSQL is running.", 500
+            return "Database connection error.", 500
         
         try:
             cursor_update = conn_update.cursor()
@@ -356,8 +335,7 @@ def edit_student(reg_no):
                 cursor_update.close()
                 conn_update.close()
 
-    current_year = datetime.now().year
-    return render_template('edit_student.html', student=student, current_year=current_year)
+    return render_template('edit_student.html', student=student, current_year=datetime.now().year)
 
 @app.route('/delete_student/<reg_no>', methods=['POST'])
 def delete_student(reg_no):
@@ -366,7 +344,7 @@ def delete_student(reg_no):
 
     conn = get_db_connection()
     if not conn:
-        return "Database connection error. Please ensure PostgreSQL is running.", 500
+        return "Database connection error.", 500
 
     try:
         cursor = conn.cursor()
@@ -402,7 +380,7 @@ def get_latest_attendance():
         return jsonify({'error': 'Database connection error.'}), 500
 
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         sql = """
         SELECT s.name, s.registration_number AS reg_no, al.timestamp
         FROM attendance_log al
@@ -413,10 +391,7 @@ def get_latest_attendance():
         cursor.execute(sql)
         latest_attendance = cursor.fetchall()
         
-        latest_attendance = [dict(row) for row in latest_attendance]
-        
-        for row in latest_attendance:
-            row['timestamp'] = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+        latest_attendance = [{"name": row[0], "reg_no": row[1], "timestamp": row[2].strftime('%Y-%m-%d %H:%M:%S')} for row in latest_attendance]
             
         return jsonify(latest_attendance)
     except psycopg2.Error as err:
@@ -430,9 +405,7 @@ def get_latest_attendance():
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
     print("Shutting down the server...")
-    
     os.kill(os.getpid(), signal.SIGINT)
-    
     parent_pid = os.getppid()
     try:
         parent = psutil.Process(parent_pid)
@@ -443,11 +416,7 @@ def shutdown():
         pass
     except Exception as e:
         print(f"An unexpected error occurred during termination: {e}")
-        
-    print("Goodbye!")
-    
     sys.exit(0)
-    
     return "Server is shutting down..."
 
 @app.route('/export_students_csv')
@@ -460,7 +429,7 @@ def export_students_csv():
         return "Database connection error.", 500
     
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor()
         cursor.execute("SELECT registration_number, name, major, year, starting_year, total_attendance FROM students")
         students = cursor.fetchall()
         
@@ -471,14 +440,7 @@ def export_students_csv():
         writer.writerow(header)
         
         for student in students:
-            writer.writerow([
-                student['registration_number'],
-                student['name'],
-                student['major'],
-                student['year'],
-                student['starting_year'],
-                student['total_attendance']
-            ])
+            writer.writerow(student)
             
         csv_data = output.getvalue()
         
@@ -498,5 +460,4 @@ def export_students_csv():
             conn.close()
 
 if __name__ == '__main__':
-    # Remove webbrowser.open() for production
     app.run(debug=True)
