@@ -18,7 +18,7 @@ import csv
 DB_URL = os.environ.get('DATABASE_URL')
 
 # --- Teacher Password Configuration ---
-TEACHER_PASSWORD_HASH = '38c2f17ffe9cc7c7e78e9625581b0e49b178f129b4e9af1a79b18d440c0338306'
+TEACHER_PASSWORD_HASH = 'f83dfe46f0933ff4ec08b974ce9c5633ecc6cbeb59f572b9b25e1c07e4a18843'
 
 # --- OpenCV Face Recognizer and Cascade Classifier ---
 recognizer = cv2.face.LBPHFaceRecognizer_create()
