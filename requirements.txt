@@ -3,3 +3,4 @@ psycopg2-binary
 opencv-python-headless==4.8.1.78
 numpy==1.26.4
 gunicorn
+psutil
