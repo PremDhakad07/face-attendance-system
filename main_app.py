@@ -12,6 +12,7 @@ import psutil
 import signal
 import io
 import json
+import csv
 
 # --- PostgreSQL Database Configuration ---
 DB_URL = os.environ.get('DATABASE_URL')
@@ -25,9 +26,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 
 # --- Global Data ---
 known_faces_data = {}
-KNOWN_EMBEDDINGS = np.array([])
-KNOWN_REG_NUMBERS = []
-FACE_THRESHOLD = 80 # Lower value means a stricter match
+FACE_THRESHOLD = 80  # Lower value means a stricter match
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
@@ -44,10 +43,8 @@ def get_db_connection():
         return None
 
 def load_known_faces():
-    global known_faces_data, KNOWN_EMBEDDINGS, KNOWN_REG_NUMBERS
+    global known_faces_data
     known_faces_data.clear()
-    KNOWN_EMBEDDINGS = np.array([])
-    KNOWN_REG_NUMBERS = []
 
     conn = get_db_connection()
     if not conn:
@@ -56,32 +53,32 @@ def load_known_faces():
 
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT registration_number, name, face_embedding, last_attendance_time FROM students")
+        cursor.execute("SELECT registration_number, name, face_embedding FROM students")
         results = cursor.fetchall()
         
-        embeddings_list = []
-        reg_numbers_list = []
+        face_images = []
+        face_labels = []
 
-        for reg_no, name, embedding_blob, last_time in results:
+        for i, (reg_no, name, embedding_blob) in enumerate(results):
             try:
-                embedding_array = np.frombuffer(embedding_blob, dtype=np.int32)
+                embedding_array = np.frombuffer(embedding_blob, dtype=np.int32).reshape(100, 100)
+                face_images.append(embedding_array)
+                face_labels.append(i)
                 
-                known_faces_data[reg_no] = {
-                    'name': name,
-                    'last_marked': last_time,
+                known_faces_data[i] = {
+                    'reg_no': reg_no,
+                    'name': name
                 }
-
-                embeddings_list.append(embedding_array)
-                reg_numbers_list.append(reg_no)
             except Exception as e:
                 print(f"Error processing embedding for {reg_no}: {e}")
                 continue
 
-        if embeddings_list:
-            KNOWN_EMBEDDINGS = np.vstack(embeddings_list)
-            KNOWN_REG_NUMBERS = reg_numbers_list
-        
-        print(f"Loaded {len(known_faces_data)} student faces from the database.")
+        if face_images:
+            recognizer.train(face_images, np.array(face_labels))
+            print(f"Loaded and trained recognizer with {len(face_images)} student faces.")
+        else:
+            print("No faces found in the database. Recognizer not trained.")
+
     except psycopg2.Error as err:
         print(f"Error loading faces from database: {err}")
     finally:
@@ -113,12 +110,6 @@ def mark_attendance(reg_no, current_time):
             cursor.close()
             conn.close()
 
-def train_recognizer(images, labels):
-    if not images:
-        return None
-    recognizer.train(images, np.array(labels))
-    return recognizer
-
 # Initial load of known faces on startup
 print("Loading known faces...")
 load_known_faces()
@@ -130,8 +121,6 @@ def generate_frames():
         print("Error: Could not open camera.")
         return
 
-    known_labels = {reg_no: i for i, reg_no in enumerate(KNOWN_REG_NUMBERS)}
-    
     while True:
         success, frame = camera.read()
         if not success:
@@ -141,12 +130,25 @@ def generate_frames():
         faces = face_cascade.detectMultiScale(gray, 1.1, 4)
 
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
             roi_gray = gray[y:y+h, x:x+w]
+            resized_roi = cv2.resize(roi_gray, (100, 100))
             
-            # Here we'll just check if a face is present, as we can't reliably recognize it
-            name = "Student Detected"
+            label_id, confidence = recognizer.predict(resized_roi)
             
+            name = "Unknown"
+            if confidence < FACE_THRESHOLD:
+                if label_id in known_faces_data:
+                    reg_no = known_faces_data[label_id]['reg_no']
+                    name = known_faces_data[label_id]['name']
+                    
+                    # Mark attendance if not already marked recently
+                    now = datetime.now()
+                    last_marked = known_faces_data[label_id].get('last_marked')
+                    if not last_marked or (now - last_marked).total_seconds() > 30: # 30-second cooldown
+                        mark_attendance(reg_no, now)
+                        known_faces_data[label_id]['last_marked'] = now
+                        
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.rectangle(frame, (x, y+h-35), (x+w, y+h), (0, 255, 0), cv2.FILLED)
             font = cv2.FONT_HERSHEY_DUPLEX
             cv2.putText(frame, name, (x + 6, y+h - 6), font, 0.5, (255, 255, 255), 1)
