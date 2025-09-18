@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Live Attendance{% endblock %}
+
+{% block content %}
+    <h2>Live Attendance Feed</h2>
+    <div style="position: relative; text-align: center; margin-bottom: 20px;">
+        <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Live video feed">
+        <p id="status-message" style="margin-top: 10px;"></p>
+    </div>
+    
+    <div class="log-container">
+        <h3>Latest Attendance Log</h3>
+        <div id="log-list">
+            </div>
+    </div>
+{% endblock %}

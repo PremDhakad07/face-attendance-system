@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Main Menu{% endblock %}
+
+{% block header_buttons %}
+    <a href="{{ url_for('teacher_login') }}" class="btn btn-teacher">Teacher Login</a>
+{% endblock %}
+
+{% block content %}
+    <h1>Welcome!</h1>
+    <div class="btn-group">
+        <a href="{{ url_for('attendance') }}" class="btn">Start Attendance</a>
+        <button id="shutdown-btn" class="btn btn-shutdown">Shutdown Server</button>
+    </div>
+{% endblock %}
