@@ -10,11 +10,10 @@
             margin-top: 50px;
         }
         #videoElement {
-            transform: scaleX(-1);
-            width: 100%;
-            height: auto;
+            display: none; /* Hide the video element */
         }
         #processedImage {
+            transform: scaleX(-1);
             width: 100%;
             height: auto;
         }
@@ -49,6 +48,7 @@
                 <h2>Live Feed</h2>
                 <div class="video-container">
                     <video id="videoElement" autoplay></video>
+                    <img id="processedImage" src="" alt="Live Video Feed">
                     <div id="video-overlay" class="video-overlay" style="display: none;">
                         Accessing Webcam...
                     </div>
@@ -65,11 +65,14 @@
     <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
     <script>
         const video = document.getElementById('videoElement');
+        const processedImage = document.getElementById('processedImage');
         const overlay = document.getElementById('video-overlay');
         const attendanceList = document.getElementById('attendance-list');
         let stream = null;
-        let lastTimestamp = 0;
-        const FPS = 10; // Frames per second to send to server
+        let isProcessing = false;
+        let videoPlaying = false;
+        let lastFrameTime = 0;
+        const FPS = 30; // Increased FPS for smoother video
         const frameInterval = 1000 / FPS;
 
         async function initCamera() {
@@ -80,8 +83,11 @@
                 overlay.style.display = 'none';
 
                 video.addEventListener('play', () => {
-                    sendFrame();
-                    setInterval(updateAttendanceLog, 3000); // Poll for latest attendance every 3 seconds
+                    if (!videoPlaying) {
+                        videoPlaying = true;
+                        sendFrame();
+                        setInterval(updateAttendanceLog, 3000); // Poll for latest attendance every 3 seconds
+                    }
                 });
             } catch (err) {
                 console.error("Error accessing the camera: ", err);
@@ -93,6 +99,14 @@
             if (video.paused || video.ended || !stream) {
                 return;
             }
+
+            const now = performance.now();
+            if (now - lastFrameTime < frameInterval || isProcessing) {
+                requestAnimationFrame(sendFrame);
+                return;
+            }
+            lastFrameTime = now;
+            isProcessing = true;
 
             const canvas = document.createElement('canvas');
             canvas.width = video.videoWidth;
@@ -110,14 +124,16 @@
             .then(response => response.json())
             .then(data => {
                 if (data.frame) {
-                    video.src = 'data:image/jpeg;base64,' + data.frame;
+                    processedImage.src = 'data:image/jpeg;base64,' + data.frame;
                 }
             })
             .catch(error => {
                 console.error('Error processing frame:', error);
+            })
+            .finally(() => {
+                isProcessing = false;
+                requestAnimationFrame(sendFrame);
             });
-
-            setTimeout(sendFrame, frameInterval);
         }
 
         function updateAttendanceLog() {
