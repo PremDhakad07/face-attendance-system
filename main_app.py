@@ -26,7 +26,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 
 # --- Global Data ---
 known_faces_data = {}
-FACE_THRESHOLD = 60  # Lower value means a stricter match
+FACE_THRESHOLD = 40  # Lower value means a stricter match
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
