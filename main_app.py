@@ -1,4 +1,3 @@
-import os
 import cv2
 import numpy as np
 import psycopg2
@@ -13,6 +12,7 @@ import signal
 import io
 import json
 import csv
+import os
 
 # --- PostgreSQL Database Configuration ---
 DB_URL = os.environ.get('DATABASE_URL')
@@ -67,9 +67,9 @@ def load_known_faces():
 
         for i, (reg_no, name, embedding_blob) in enumerate(results):
             try:
-                # Convert the raw bytea blob back to a numpy array
-                embedding_array = np.frombuffer(embedding_blob, dtype=np.int32).reshape(100, 100)
-                face_images.append(embedding_array.astype(np.uint8)) # Ensure correct data type for OpenCV
+                # CRITICAL FIX: The embedding is a grayscale image (uint8), so we must read it back as such.
+                embedding_array = np.frombuffer(embedding_blob, dtype=np.uint8).reshape(100, 100)
+                face_images.append(embedding_array)
                 face_labels.append(i)
 
                 known_faces_data[i] = {
@@ -111,7 +111,9 @@ def mark_attendance(reg_no, current_time):
         cursor.execute(sql_insert_log, (reg_no, current_time))
 
         conn.commit()
-        print(f"Attendance marked for {known_faces_data.get(reg_no, {}).get('name', 'Unknown')} ({reg_no})")
+        # Find the student's name from the global cache
+        student_name = next((data['name'] for data in known_faces_data.values() if data['reg_no'] == reg_no), 'Unknown')
+        print(f"Attendance marked for {student_name} ({reg_no})")
 
     except psycopg2.Error as err:
         print(f"Error updating attendance: {err}")
@@ -226,7 +228,8 @@ def add_student():
         try:
             cursor = conn.cursor()
             sql = "INSERT INTO students (registration_number, name, major, year, starting_year, face_embedding) VALUES (%s, %s, %s, %s, %s, %s)"
-            embedding_bytes = embedding_array.astype(np.int32).tobytes()
+            # CRITICAL FIX: Store the embedding as uint8, which is the correct data type for image data.
+            embedding_bytes = embedding_array.astype(np.uint8).tobytes()
             cursor.execute(sql, (reg_no, name, major, year, starting_year, psycopg2.Binary(embedding_bytes)))
             conn.commit()
 
@@ -336,7 +339,7 @@ def attendance():
 @app.route('/process_frame', methods=['POST'])
 def process_frame():
     data = request.json
-    encoded_frame = data.get('image') # CORRECTED: Changed 'frame' to 'image'
+    encoded_frame = data.get('image')
 
     if not encoded_frame:
         return jsonify({'error': 'No image data provided.'}), 400
