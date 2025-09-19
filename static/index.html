@@ -4,25 +4,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Real-time Attendance Tracking</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts for Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            background-color: #f0f2f5;
-            margin: 0;
-            color: #333;
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            transition: background-color 0.3s;
         }
-        .container {
+        .container-card {
+            background-color: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            padding: 1.5rem;
+            max-width: 1200px;
+        }
+        .video-box {
             position: relative;
-            max-width: 640px;
-            border: 5px solid #3498db;
-            border-radius: 10px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            background-color: #e5e7eb;
+            border-radius: 0.5rem;
             overflow: hidden;
+            width: 100%;
         }
         #video-feed {
             width: 100%;
@@ -36,27 +42,73 @@
             width: 100%;
             height: 100%;
         }
-        h1 {
-            color: #2c3e50;
-        }
         .info-box {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #ecf0f1;
-            border-radius: 8px;
+            margin-top: 1rem;
+            padding: 1rem;
+            background-color: #d1fae5;
+            border-radius: 0.5rem;
             text-align: center;
+            color: #10b981;
+            font-weight: 600;
+        }
+        .info-box.error {
+            background-color: #fee2e2;
+            color: #ef4444;
+        }
+        .attendance-log-box {
+            background-color: #f3f4f6;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            overflow-y: auto;
+            max-height: 400px;
+        }
+        .log-item {
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+            background-color: white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
     </style>
 </head>
-<body>
-    <h1>Real-time Attendance Tracking</h1>
-    <div class="container">
-        <video id="video-feed" autoplay playsinline></video>
-        <canvas id="overlay-canvas"></canvas>
-    </div>
-    <div class="info-box">
-        <p>System is running. Look into the camera to mark your attendance.</p>
-        <p id="status-message">Connecting to camera...</p>
+<body class="flex flex-col items-center min-h-screen p-4 bg-gray-100 text-gray-800">
+
+    <div class="container-card w-full flex flex-col lg:flex-row space-y-6 lg:space-y-0 lg:space-x-8">
+
+        <!-- Left Column: Video Feed -->
+        <div class="flex-1">
+            <!-- Back button and title -->
+            <div class="flex items-center justify-between mb-6">
+                <a href="#" onclick="history.back()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition-colors">
+                    &larr; Back
+                </a>
+                <h1 class="text-3xl font-bold text-center text-gray-800 flex-1">Real-time Attendance Tracking</h1>
+            </div>
+
+            <div class="video-box shadow-lg">
+                <video id="video-feed" autoplay playsinline></video>
+                <canvas id="overlay-canvas"></canvas>
+            </div>
+            <div id="status-message-container" class="info-box shadow-md mt-6">
+                <p id="status-message" class="text-sm">Connecting to camera...</p>
+            </div>
+        </div>
+
+        <!-- Right Column: Attendance Log -->
+        <div class="w-full lg:w-96 flex-shrink-0">
+            <div class="flex flex-col space-y-4">
+                <div class="text-center lg:text-left">
+                    <h2 class="text-2xl font-semibold text-gray-700">Attendance Log</h2>
+                    <p class="text-gray-500 text-sm mt-1">Updates in real-time</p>
+                </div>
+                <div class="attendance-log-box shadow-inner">
+                    <div id="log-list" class="flex flex-col space-y-2">
+                        <!-- Log items will be added here by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -64,28 +116,31 @@
         const canvas = document.getElementById('overlay-canvas');
         const context = canvas.getContext('2d');
         const statusMessage = document.getElementById('status-message');
+        const statusMessageContainer = document.getElementById('status-message-container');
+        const logList = document.getElementById('log-list');
         let stream = null;
         let lastFrameTime = 0;
-        const frameInterval = 200; // milliseconds between sending frames (5 FPS)
+        const frameInterval = 500; // milliseconds between sending frames (2 FPS)
+        let attendanceCache = {}; // Cache to prevent duplicate log entries
 
         async function startCamera() {
             try {
                 statusMessage.textContent = "Requesting camera access...";
                 stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 video.srcObject = stream;
-                statusMessage.textContent = "Camera connected. Initializing...";
+                statusMessageContainer.classList.remove('error');
+                statusMessage.textContent = "System is running. Look into the camera.";
 
                 video.onloadedmetadata = () => {
                     video.play();
-                    // Set canvas dimensions to match the video
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
-                    // Start the main loop
                     requestAnimationFrame(processFrame);
                 };
             } catch (err) {
                 console.error("Error accessing camera: ", err);
                 statusMessage.textContent = "Error: Could not access camera. Please check permissions.";
+                statusMessageContainer.classList.add('error');
             }
         }
 
@@ -94,17 +149,15 @@
                 return;
             }
 
-            // Limit the frame rate to reduce server load
             if (timestamp - lastFrameTime > frameInterval) {
                 lastFrameTime = timestamp;
 
-                // Create a temporary canvas to get a frame as an image
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = video.videoWidth;
                 tempCanvas.height = video.videoHeight;
                 const tempContext = tempCanvas.getContext('2d');
                 tempContext.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-                const imageDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8); // High quality JPEG
+                const imageDataUrl = tempCanvas.toDataURL('image/jpeg', 0.4);
 
                 try {
                     const response = await fetch('http://localhost:5000/process_frame', {
@@ -117,10 +170,15 @@
 
                     const faces = await response.json();
                     drawFaces(faces);
+                    updateAttendanceLog(faces);
+                    // On successful connection, ensure status is positive
+                    statusMessage.textContent = "System is running. Look into the camera.";
+                    statusMessageContainer.classList.remove('error');
 
                 } catch (error) {
                     console.error('Error fetching face data:', error);
                     statusMessage.textContent = "Error communicating with server.";
+                    statusMessageContainer.classList.add('error');
                 }
             }
 
@@ -128,37 +186,49 @@
         }
 
         function drawFaces(faces) {
-            // Clear the previous drawings
             context.clearRect(0, 0, canvas.width, canvas.height);
 
             faces.forEach(face => {
                 const [top, right, bottom, left] = face.location;
                 const color = face.color;
-
-                // Draw bounding box
+                
                 context.strokeStyle = color;
                 context.lineWidth = 3;
                 context.strokeRect(left, top, right - left, bottom - top);
 
-                // Draw text box with background
-                const labels = [face.name, face.reg_no, face.status].filter(l => l); // Filter out empty strings
+                const labels = [face.name, face.reg_no, face.status].filter(l => l);
                 const fontSize = 16;
-                context.font = `${fontSize}px Arial`;
+                context.font = `${fontSize}px 'Inter', sans-serif`;
 
                 const textMetrics = labels.map(label => context.measureText(label));
                 const maxWidth = Math.max(...textMetrics.map(m => m.width));
                 const textRectHeight = (labels.length * (fontSize + 5)) + 10;
 
-                // Draw the filled rectangle background
-                context.fillStyle = 'rgba(0, 0, 0, 0.7)'; // Semi-transparent black
+                context.fillStyle = 'rgba(0, 0, 0, 0.7)';
                 context.fillRect(left, bottom, maxWidth + 10, textRectHeight);
 
-                // Draw the text
                 context.fillStyle = 'white';
                 labels.forEach((label, index) => {
                     const y = bottom + (index + 1) * (fontSize + 5);
                     context.fillText(label, left + 5, y);
                 });
+            });
+        }
+        
+        function updateAttendanceLog(faces) {
+            faces.forEach(face => {
+                // Only add to log if a name is recognized and it's a new entry
+                if (face.name && !attendanceCache[face.reg_no]) {
+                    attendanceCache[face.reg_no] = true; // Mark as added to log
+                    const logItem = document.createElement('div');
+                    logItem.className = 'log-item';
+                    const timestamp = new Date().toLocaleTimeString();
+                    logItem.innerHTML = `
+                        <p class="text-sm font-semibold">${face.name} (${face.reg_no})</p>
+                        <p class="text-xs text-gray-500">${face.status} at ${timestamp}</p>
+                    `;
+                    logList.prepend(logItem); // Add to the top of the list
+                }
             });
         }
 
