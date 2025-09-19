@@ -3,19 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Attendance System</title>
+    <title>Student Attendance System</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
     <style>
+        body {
+            background-color: #2e86de; /* A nice shade of blue */
+        }
         .container {
             margin-top: 50px;
         }
         #videoElement {
-            display: none; /* Hide the video element */
+            display: none;
         }
         #processedImage {
             transform: scaleX(-1);
             width: 100%;
             height: auto;
+            border: 2px solid #ccc;
         }
         .video-container {
             position: relative;
@@ -42,9 +46,10 @@
 </head>
 <body>
     <div class="container">
-        <h1 class="text-center">Student Attendance System</h1>
+        <a href="{{ url_for('main_menu') }}" class="btn btn-primary mb-3">Back to Home</a>
+        <h1 class="text-center text-white">Student Attendance System</h1>
         <div class="row mt-4">
-            <div class="col-md-6 text-center">
+            <div class="col-md-6 text-center text-white">
                 <h2>Live Feed</h2>
                 <div class="video-container">
                     <video id="videoElement" autoplay></video>
@@ -54,10 +59,12 @@
                     </div>
                 </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-6 text-white">
                 <h2>Attendance Log</h2>
                 <div id="attendance-log-container">
-                    <ul class="list-group" id="attendance-list"></ul>
+                    <ul class="list-group" id="attendance-list">
+                        <li class="list-group-item">No attendance recorded yet.</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -72,7 +79,7 @@
         let isProcessing = false;
         let videoPlaying = false;
         let lastFrameTime = 0;
-        const FPS = 30; // Increased FPS for smoother video
+        const FPS = 20; // A stable FPS for most connections
         const frameInterval = 1000 / FPS;
 
         async function initCamera() {
@@ -86,7 +93,7 @@
                     if (!videoPlaying) {
                         videoPlaying = true;
                         sendFrame();
-                        setInterval(updateAttendanceLog, 3000); // Poll for latest attendance every 3 seconds
+                        setInterval(updateAttendanceLog, 3000);
                     }
                 });
             } catch (err) {
