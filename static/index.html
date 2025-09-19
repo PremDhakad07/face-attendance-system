@@ -4,9 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Real-time Attendance Tracking</title>
-    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Google Fonts for Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
@@ -75,9 +73,7 @@
 
     <div class="container-card w-full flex flex-col lg:flex-row space-y-6 lg:space-y-0 lg:space-x-8">
 
-        <!-- Left Column: Video Feed -->
         <div class="flex-1">
-            <!-- Back button and title -->
             <div class="flex items-center justify-between mb-6">
                 <a href="#" onclick="history.back()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold py-2 px-4 rounded-lg transition-colors">
                     &larr; Back
@@ -94,7 +90,6 @@
             </div>
         </div>
 
-        <!-- Right Column: Attendance Log -->
         <div class="w-full lg:w-96 flex-shrink-0">
             <div class="flex flex-col space-y-4">
                 <div class="text-center lg:text-left">
@@ -103,8 +98,7 @@
                 </div>
                 <div class="attendance-log-box shadow-inner">
                     <div id="log-list" class="flex flex-col space-y-2">
-                        <!-- Log items will be added here by JavaScript -->
-                    </div>
+                        </div>
                 </div>
             </div>
         </div>
@@ -118,15 +112,15 @@
         const statusMessage = document.getElementById('status-message');
         const statusMessageContainer = document.getElementById('status-message-container');
         const logList = document.getElementById('log-list');
-        let stream = null;
+
         let lastFrameTime = 0;
         const frameInterval = 500; // milliseconds between sending frames (2 FPS)
-        let attendanceCache = {}; // Cache to prevent duplicate log entries
+        const logRefreshInterval = 2000; // milliseconds to refresh the attendance log
 
         async function startCamera() {
             try {
                 statusMessage.textContent = "Requesting camera access...";
-                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 video.srcObject = stream;
                 statusMessageContainer.classList.remove('error');
                 statusMessage.textContent = "System is running. Look into the camera.";
@@ -136,6 +130,7 @@
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                     requestAnimationFrame(processFrame);
+                    setInterval(fetchAttendanceLog, logRefreshInterval);
                 };
             } catch (err) {
                 console.error("Error accessing camera: ", err);
@@ -157,7 +152,7 @@
                 tempCanvas.height = video.videoHeight;
                 const tempContext = tempCanvas.getContext('2d');
                 tempContext.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-                const imageDataUrl = tempCanvas.toDataURL('image/jpeg', 0.4);
+                const imageDataUrl = tempCanvas.toDataURL('image/jpeg', 0.8);
 
                 try {
                     const response = await fetch('http://localhost:5000/process_frame', {
@@ -168,10 +163,12 @@
                         body: JSON.stringify({ image: imageDataUrl }),
                     });
 
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
                     const faces = await response.json();
                     drawFaces(faces);
-                    updateAttendanceLog(faces);
-                    // On successful connection, ensure status is positive
+                    
                     statusMessage.textContent = "System is running. Look into the camera.";
                     statusMessageContainer.classList.remove('error');
 
@@ -215,21 +212,33 @@
             });
         }
         
-        function updateAttendanceLog(faces) {
-            faces.forEach(face => {
-                // Only add to log if a name is recognized and it's a new entry
-                if (face.name && !attendanceCache[face.reg_no]) {
-                    attendanceCache[face.reg_no] = true; // Mark as added to log
-                    const logItem = document.createElement('div');
-                    logItem.className = 'log-item';
-                    const timestamp = new Date().toLocaleTimeString();
-                    logItem.innerHTML = `
-                        <p class="text-sm font-semibold">${face.name} (${face.reg_no})</p>
-                        <p class="text-xs text-gray-500">${face.status} at ${timestamp}</p>
-                    `;
-                    logList.prepend(logItem); // Add to the top of the list
+        async function fetchAttendanceLog() {
+            try {
+                const response = await fetch('http://localhost:5000/get_latest_attendance');
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
                 }
-            });
+                const attendanceData = await response.json();
+                
+                logList.innerHTML = ''; // Clear existing log
+                
+                if (attendanceData.length > 0) {
+                    attendanceData.forEach(entry => {
+                        const logItem = document.createElement('div');
+                        logItem.className = 'log-item';
+                        const timestamp = new Date(entry.timestamp).toLocaleTimeString();
+                        logItem.innerHTML = `
+                            <p class="text-sm font-semibold">${entry.name} (${entry.reg_no})</p>
+                            <p class="text-xs text-gray-500">Present at ${timestamp}</p>
+                        `;
+                        logList.prepend(logItem); // Add to the top of the list
+                    });
+                } else {
+                    logList.innerHTML = '<div class="log-item text-center text-gray-400">No attendance recorded yet.</div>';
+                }
+            } catch (error) {
+                console.error('Error fetching attendance data:', error);
+            }
         }
 
         window.onload = startCamera;

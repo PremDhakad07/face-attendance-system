@@ -27,12 +27,14 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 # --- Global Data ---
 known_faces_data = {}
 FACE_THRESHOLD = 40  # Lower value means a stricter match
+last_marked_time = {} # Dictionary to store last attendance time to prevent spamming
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'
 app.config['MAX_CONTENT_LENGTH'] = 60 * 1024 * 1024
 
 def get_db_connection():
+    """Establishes and returns a connection to the PostgreSQL database."""
     try:
         if not DB_URL:
             print("Error: DATABASE_URL environment variable is not set.")
@@ -43,6 +45,10 @@ def get_db_connection():
         return None
 
 def load_known_faces():
+    """
+    Loads face embeddings, names, and registration numbers from the database
+    and trains the LBPH face recognizer.
+    """
     global known_faces_data
     known_faces_data.clear()
 
@@ -61,8 +67,9 @@ def load_known_faces():
 
         for i, (reg_no, name, embedding_blob) in enumerate(results):
             try:
+                # Convert the raw bytea blob back to a numpy array
                 embedding_array = np.frombuffer(embedding_blob, dtype=np.int32).reshape(100, 100)
-                face_images.append(embedding_array)
+                face_images.append(embedding_array.astype(np.uint8)) # Ensure correct data type for OpenCV
                 face_labels.append(i)
 
                 known_faces_data[i] = {
@@ -87,6 +94,7 @@ def load_known_faces():
             conn.close()
 
 def mark_attendance(reg_no, current_time):
+    """Inserts a new attendance record and updates the student's total attendance."""
     conn = get_db_connection()
     if not conn:
         return
@@ -94,14 +102,16 @@ def mark_attendance(reg_no, current_time):
     try:
         cursor = conn.cursor()
 
+        # Update the student's total attendance and last attendance time
         sql_update_student = "UPDATE students SET total_attendance = total_attendance + 1, last_attendance_time = %s WHERE registration_number = %s"
         cursor.execute(sql_update_student, (current_time, reg_no))
 
+        # Insert a new record into the attendance log
         sql_insert_log = "INSERT INTO attendance_log (registration_number, timestamp) VALUES (%s, %s)"
         cursor.execute(sql_insert_log, (reg_no, current_time))
 
         conn.commit()
-        print(f"Attendance marked for {known_faces_data[reg_no]['name']} ({reg_no})")
+        print(f"Attendance marked for {known_faces_data.get(reg_no, {}).get('name', 'Unknown')} ({reg_no})")
 
     except psycopg2.Error as err:
         print(f"Error updating attendance: {err}")
@@ -207,7 +217,7 @@ def add_student():
 
         # Resize to a consistent size for the recognizer
         resized_roi = cv2.resize(roi_gray, (100, 100))
-        embedding_array = np.array(resized_roi).flatten()
+        embedding_array = np.array(resized_roi)
 
         conn = get_db_connection()
         if not conn:
@@ -323,11 +333,13 @@ def delete_student(reg_no):
 def attendance():
     return render_template('index.html')
 
-# New route to process frames from the browser
 @app.route('/process_frame', methods=['POST'])
 def process_frame():
     data = request.json
-    encoded_frame = data['frame']
+    encoded_frame = data.get('image') # CORRECTED: Changed 'frame' to 'image'
+
+    if not encoded_frame:
+        return jsonify({'error': 'No image data provided.'}), 400
     
     try:
         header, encoded_data = encoded_frame.split(',', 1)
@@ -338,36 +350,46 @@ def process_frame():
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.1, 4)
 
+        result_faces = []
+
         for (x, y, w, h) in faces:
             roi_gray = gray[y:y+h, x:x+w]
             resized_roi = cv2.resize(roi_gray, (100, 100))
 
-            label_id, confidence = recognizer.predict(resized_roi)
-
+            reg_no = "Unknown"
             name = "Unknown"
-            if confidence < FACE_THRESHOLD:
-                if label_id in known_faces_data:
-                    reg_no = known_faces_data[label_id]['reg_no']
-                    name = known_faces_data[label_id]['name']
+            status = "Absent"
 
-                    now = datetime.now()
-                    last_marked = known_faces_data[label_id].get('last_marked')
-                    if not last_marked or (now - last_marked).total_seconds() > 30: # 30-second cooldown
-                        mark_attendance(reg_no, now)
-                        known_faces_data[label_id]['last_marked'] = now
+            # Check if there are known faces to compare against
+            if known_faces_data:
+                label_id, confidence = recognizer.predict(resized_roi)
 
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.rectangle(frame, (x, y+h-35), (x+w, y+h), (0, 255, 0), cv2.FILLED)
-            font = cv2.FONT_HERSHEY_DUPLEX
-            cv2.putText(frame, name, (x + 6, y+h - 6), font, 0.5, (255, 255, 255), 1)
+                if confidence < FACE_THRESHOLD:
+                    if label_id in known_faces_data:
+                        reg_no = known_faces_data[label_id]['reg_no']
+                        name = known_faces_data[label_id]['name']
+                        status = "Present"
+                        
+                        # Check cooldown period (30 seconds)
+                        now = time.time()
+                        if reg_no not in last_marked_time or (now - last_marked_time[reg_no]) > 30:
+                            mark_attendance(reg_no, datetime.now())
+                            last_marked_time[reg_no] = now
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        processed_frame = base64.b64encode(buffer).decode('utf-8')
-        return jsonify({'frame': processed_frame})
+            # Prepare data for the client-side
+            result_faces.append({
+                'location': [y, x+w, y+h, x],
+                'name': name,
+                'reg_no': reg_no,
+                'status': status,
+                'color': '#10b981' if status == 'Present' else '#ef4444'
+            })
+        
+        return jsonify(result_faces)
 
     except Exception as e:
         print(f"Error processing frame: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'An unexpected error occurred.'}), 500
 
 @app.route('/get_latest_attendance')
 def get_latest_attendance():
@@ -387,7 +409,7 @@ def get_latest_attendance():
         cursor.execute(sql)
         latest_attendance = cursor.fetchall()
 
-        latest_attendance = [{"name": row[0], "reg_no": row[1], "timestamp": row[2].strftime('%Y-%m-%d %H:%M:%S')} for row in latest_attendance]
+        latest_attendance = [{"name": row[0], "reg_no": row[1], "timestamp": row[2].isoformat()} for row in latest_attendance]
 
         return jsonify(latest_attendance)
     except psycopg2.Error as err:
