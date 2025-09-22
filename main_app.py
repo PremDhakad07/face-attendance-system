@@ -26,7 +26,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 
 # --- Global Data ---
 known_faces_data = {}
-FACE_THRESHOLD = 40  # Lower value means a stricter match
+FACE_THRESHOLD = 80  # Lower value means a stricter match
 last_marked_time = {} # Dictionary to store last attendance time to prevent spamming
 
 app = Flask(__name__)
