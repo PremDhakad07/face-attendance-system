@@ -22,11 +22,12 @@ TEACHER_PASSWORD_HASH = 'f83dfe46f0933ff4ec08b974ce9c5633ecc6cbeb59f572b9b25e1c0
 
 # --- OpenCV Face Recognizer and Cascade Classifier ---
 recognizer = cv2.face.LBPHFaceRecognizer_create()
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Load the cascade file from the local directory
+face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 
 # --- Global Data ---
 known_faces_data = {}
-FACE_THRESHOLD = 80  # Lower value means a stricter match
+FACE_THRESHOLD = 80  # A lower value means a stricter match, but LBPH scores are high. 80 is a good starting point.
 last_marked_time = {} # Dictionary to store last attendance time to prevent spamming
 
 app = Flask(__name__)
@@ -361,8 +362,16 @@ def process_frame():
         np_arr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
+        if frame is None:
+            return jsonify({'error': 'Failed to decode image.'}), 400
+        
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
+        # Check if the classifier is loaded successfully
+        if face_cascade.empty():
+            print("Error: Face cascade classifier not loaded.")
+            return jsonify({'error': 'Face detection model not available.'}), 500
+
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=6, minSize=(30, 30))
         
         print(f"Detected {len(faces)} face(s).")
