@@ -26,7 +26,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 
 # --- Global Data ---
 known_faces_data = {}
-FACE_THRESHOLD = 40  # Lower value means a stricter match
+FACE_THRESHOLD = 70  # Higher value means a more lenient match
 last_marked_time = {} # Dictionary to store last attendance time to prevent spamming
 
 app = Flask(__name__)
@@ -221,7 +221,7 @@ def add_student():
             return jsonify({'success': False, 'message': 'Failed to decode image data. Please try again.'}), 400
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        faces = face_cascade.detectMultiScale(gray, 1.05, 6, minSize=(30, 30))
 
         if len(faces) != 1:
             return jsonify({'success': False, 'message': f'Found {len(faces)} faces. Please ensure only one clear face is in the picture.'}), 400
@@ -362,7 +362,10 @@ def process_frame():
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        
+        # --- FIX: Adjust detectMultiScale parameters and add a print statement for debugging ---
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=6, minSize=(30, 30))
+        print(f"Detected {len(faces)} faces.")
 
         result_faces = []
 
