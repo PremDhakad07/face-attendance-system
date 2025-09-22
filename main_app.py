@@ -26,7 +26,7 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 
 # --- Global Data ---
 known_faces_data = {}
-FACE_THRESHOLD = 70  # Higher value means a more lenient match
+FACE_THRESHOLD = 40  # Lower value means a stricter match
 last_marked_time = {} # Dictionary to store last attendance time to prevent spamming
 
 app = Flask(__name__)
@@ -65,7 +65,7 @@ def load_known_faces():
         face_images = []
         face_labels = []
         
-        # --- FIX: Create a consistent mapping from reg_no to integer label ---
+        # --- Create a consistent mapping from reg_no to integer label ---
         label_map = {}
         reverse_label_map = {}
         current_label_id = 0
@@ -363,10 +363,10 @@ def process_frame():
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # --- FIX: Adjust detectMultiScale parameters and add a print statement for debugging ---
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=6, minSize=(30, 30))
-        print(f"Detected {len(faces)} faces.")
-
+        
+        print(f"Detected {len(faces)} face(s).")
+        
         result_faces = []
 
         for (x, y, w, h) in faces:
@@ -377,27 +377,24 @@ def process_frame():
             name = "Unknown"
             status = "Absent"
 
-            # Check if there are known faces to compare against
             if known_faces_data:
                 label_id, confidence = recognizer.predict(resized_roi)
-
+                
                 if confidence < FACE_THRESHOLD:
-                    # --- FIX: Use the reverse_label_map to find the correct student data ---
                     if label_id in known_faces_data:
                         student_data = known_faces_data[label_id]
                         reg_no = student_data['reg_no']
                         name = student_data['name']
                         status = "Present"
                         
-                        # Check cooldown period (30 seconds)
                         now = time.time()
                         if reg_no not in last_marked_time or (now - last_marked_time[reg_no]) > 30:
                             mark_attendance(reg_no, datetime.now())
                             last_marked_time[reg_no] = now
 
-            # Prepare data for the client-side
             result_faces.append({
-                'location': [y, x+w, y+h, x],
+                # Ensure all coordinates are standard Python ints
+                'location': [int(y), int(x+w), int(y+h), int(x)],
                 'name': name,
                 'reg_no': reg_no,
                 'status': status,
