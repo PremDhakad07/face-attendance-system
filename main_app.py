@@ -64,18 +64,22 @@ def load_known_faces():
 
         face_images = []
         face_labels = []
+        
+        # --- FIX: Create a consistent mapping from reg_no to integer label ---
+        label_map = {}
+        reverse_label_map = {}
+        current_label_id = 0
 
-        for i, (reg_no, name, embedding_blob) in enumerate(results):
+        for reg_no, name, embedding_blob in results:
+            if reg_no not in label_map:
+                label_map[reg_no] = current_label_id
+                reverse_label_map[current_label_id] = {'reg_no': reg_no, 'name': name}
+                current_label_id += 1
+            
             try:
-                # CRITICAL FIX: The embedding is a grayscale image (uint8), so we must read it back as such.
                 embedding_array = np.frombuffer(embedding_blob, dtype=np.uint8).reshape(100, 100)
                 face_images.append(embedding_array)
-                face_labels.append(i)
-
-                known_faces_data[i] = {
-                    'reg_no': reg_no,
-                    'name': name
-                }
+                face_labels.append(label_map[reg_no])
             except Exception as e:
                 print(f"Error processing embedding for {reg_no}: {e}")
                 continue
@@ -83,8 +87,10 @@ def load_known_faces():
         if face_images:
             recognizer.train(face_images, np.array(face_labels))
             print(f"Loaded and trained recognizer with {len(face_images)} student faces.")
+            known_faces_data = reverse_label_map
         else:
             print("No faces found in the database. Recognizer not trained.")
+            known_faces_data = {}
 
     except psycopg2.Error as err:
         print(f"Error loading faces from database: {err}")
@@ -111,8 +117,14 @@ def mark_attendance(reg_no, current_time):
         cursor.execute(sql_insert_log, (reg_no, current_time))
 
         conn.commit()
+        
         # Find the student's name from the global cache
-        student_name = next((data['name'] for data in known_faces_data.values() if data['reg_no'] == reg_no), 'Unknown')
+        student_name = "Unknown"
+        for data in known_faces_data.values():
+            if data['reg_no'] == reg_no:
+                student_name = data['name']
+                break
+
         print(f"Attendance marked for {student_name} ({reg_no})")
 
     except psycopg2.Error as err:
@@ -228,7 +240,6 @@ def add_student():
         try:
             cursor = conn.cursor()
             sql = "INSERT INTO students (registration_number, name, major, year, starting_year, face_embedding) VALUES (%s, %s, %s, %s, %s, %s)"
-            # CRITICAL FIX: Store the embedding as uint8, which is the correct data type for image data.
             embedding_bytes = embedding_array.astype(np.uint8).tobytes()
             cursor.execute(sql, (reg_no, name, major, year, starting_year, psycopg2.Binary(embedding_bytes)))
             conn.commit()
@@ -368,9 +379,11 @@ def process_frame():
                 label_id, confidence = recognizer.predict(resized_roi)
 
                 if confidence < FACE_THRESHOLD:
+                    # --- FIX: Use the reverse_label_map to find the correct student data ---
                     if label_id in known_faces_data:
-                        reg_no = known_faces_data[label_id]['reg_no']
-                        name = known_faces_data[label_id]['name']
+                        student_data = known_faces_data[label_id]
+                        reg_no = student_data['reg_no']
+                        name = student_data['name']
                         status = "Present"
                         
                         # Check cooldown period (30 seconds)
