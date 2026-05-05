@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Teacher Menu{% endblock %}
+
+{% block header_buttons %}
+    <a href="{{ url_for('logout') }}" class="btn btn-teacher">Logout</a>
+{% endblock %}
+
+{% block content %}
+    <h2>Teacher Menu</h2>
+    <div class="btn-group">
+        <a href="{{ url_for('add_student') }}" class="btn btn-add">Add New Student</a>
+        <a href="{{ url_for('manage_students') }}" class="btn">Manage Students</a>
+        <a href="{{ url_for('export_students_csv') }}" id="export-btn" class="btn">Export Student Data (CSV)</a>
+    </div>
+{% endblock %}

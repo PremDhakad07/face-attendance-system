@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Teacher Login{% endblock %}
+
+{% block header_buttons %}
+    <a href="{{ url_for('main_menu') }}" class="btn btn-back">Main Menu</a>
+{% endblock %}
+
+{% block content %}
+    <h2>Teacher Login</h2>
+    <form id="login-form" action="{{ url_for('teacher_login') }}" method="post" data-error="{{ error }}">
+        <div class="form-group">
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <button type="submit" class="btn">Login</button>
+    </form>
+{% endblock %}

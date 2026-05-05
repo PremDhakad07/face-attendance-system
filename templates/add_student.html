@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Add New Student{% endblock %}
+
+{% block header_buttons %}
+    <a href="{{ url_for('teacher_menu') }}" class="btn btn-back">Teacher Menu</a>
+{% endblock %}
+
+{% block content %}
+    <h2>Add New Student</h2>
+    <form id="add-student-form" action="{{ url_for('add_student') }}" method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label for="reg_no">Registration Number:</label>
+            <input type="text" id="reg_no" name="reg_no" required>
+        </div>
+        <div class="form-group">
+            <label for="name">Name:</label>
+            <input type="text" id="name" name="name" required>
+        </div>
+        <div class="form-group">
+            <label for="major">Major:</label>
+            <input type="text" id="major" name="major" required>
+        </div>
+        <div class="form-group">
+            <label for="year">Year:</label>
+            <input type="number" id="year" name="year" required min="1" max="4">
+        </div>
+        <div class="form-group">
+            <label for="starting_year">Starting Year:</label>
+            <input type="number" id="starting_year" name="starting_year" required min="2000" max="{{ current_year }}">
+        </div>
+
+        <div class="form-group">
+            <label>Face Capture:</label>
+            <div class="video-container">
+                <video id="video-feed" autoplay></video>
+                <div id="video-placeholder">No camera feed.</div>
+            </div>
+            <div class="btn-group" style="margin-top: 10px;">
+                <button type="button" id="start-camera-btn" class="btn">Start Camera</button>
+                <button type="button" id="capture-btn" class="btn" disabled>Capture Photo</button>
+                <button type="button" id="stop-camera-btn" class="btn" disabled>Stop Camera</button>
+            </div>
+        </div>
+
+        <div class="form-group" style="text-align: center; margin-top: 20px;">
+            <p style="margin: 0 0 10px;">--- OR ---</p>
+            <label for="face_image" class="file-label">Upload Image</label>
+            <input type="file" id="face_image" name="face_image" accept="image/*" class="file-input">
+        </div>
+        
+        <input type="hidden" id="imageData" name="camera_image_data">
+        <button type="submit" class="btn">Add Student</button>
+    </form>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const video = document.getElementById('video-feed');
+            const videoPlaceholder = document.getElementById('video-placeholder');
+            const startCameraBtn = document.getElementById('start-camera-btn');
+            const captureBtn = document.getElementById('capture-btn');
+            const stopCameraBtn = document.getElementById('stop-camera-btn');
+            const imageDataInput = document.getElementById('imageData');
+            const fileInput = document.getElementById('face_image');
+            const form = document.getElementById('add-student-form');
+            const canvas = document.createElement('canvas'); // Create a canvas element once
+            let stream = null;
+
+            // Function to display a temporary message
+            function showMessage(message) {
+                alert(message);
+            }
+
+            async function startCamera() {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                    video.style.display = 'block';
+                    videoPlaceholder.style.display = 'none';
+                    captureBtn.disabled = false;
+                    stopCameraBtn.disabled = false;
+                    startCameraBtn.disabled = true;
+                    fileInput.disabled = true;
+                } catch (err) {
+                    console.error("Error accessing camera: ", err);
+                    showMessage("Camera access denied or no camera found. Please upload a file instead.");
+                }
+            }
+
+            function stopCamera() {
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    video.srcObject = null;
+                    video.style.display = 'none';
+                    videoPlaceholder.style.display = 'block';
+                    captureBtn.disabled = true;
+                    stopCameraBtn.disabled = true;
+                    startCameraBtn.disabled = false;
+                    fileInput.disabled = false;
+                }
+            }
+
+            startCameraBtn.addEventListener('click', startCamera);
+            stopCameraBtn.addEventListener('click', stopCamera);
+
+            captureBtn.addEventListener('click', function() {
+                if (!stream) {
+                    showMessage("Camera is not running. Please start the camera first.");
+                    return;
+                }
+                
+                // Define the desired dimensions for the captured photo
+                const newWidth = 640;
+                const newHeight = 480;
+
+                // Set the canvas size to the new, smaller dimensions
+                canvas.width = newWidth;
+                canvas.height = newHeight;
+
+                // Draw the video frame onto the canvas, resizing it in the process
+                const context = canvas.getContext('2d');
+                context.drawImage(video, 0, 0, newWidth, newHeight);
+
+                // Convert the canvas content to a compressed JPEG data URL
+                // The second parameter (0.8) is the quality (from 0 to 1)
+                const imageDataURL = canvas.toDataURL('image/jpeg', 0.8);
+                
+                imageDataInput.value = imageDataURL;
+                fileInput.value = '';
+                stopCamera();
+                showMessage("Photo captured successfully!");
+            });
+
+            fileInput.addEventListener('change', function() {
+                if (fileInput.value) {
+                    imageDataInput.value = '';
+                    stopCamera();
+                }
+            });
+
+            form.addEventListener('submit', function(event) {
+                event.preventDefault(); 
+                
+                if (!imageDataInput.value && !fileInput.value) {
+                    showMessage("Please upload an image or capture a photo from the camera.");
+                    return;
+                }
+
+                const formData = new FormData(form);
+
+                fetch(form.action, {
+                    method: form.method,
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showMessage(data.message);
+                        if (data.redirect_url) {
+                            window.location.href = data.redirect_url;
+                        }
+                    } else {
+                        showMessage("Error: " + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Submission error:', error);
+                    showMessage("An unexpected error occurred. Check the console for details.");
+                });
+            });
+        });
+    </script>
+{% endblock %}

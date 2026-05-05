@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            padding: 1rem;
+        }
+        .video-container {
+            position: relative;
+            background-color: #000;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 640px;
+            margin: auto;
+        }
+        #videoElement {
+            width: 100%;
+            height: auto;
+        }
+        .face-box {
+            position: absolute;
+            border: 4px solid;
+            z-index: 10;
+        }
+        .face-box .label {
+            position: absolute;
+            top: -25px;
+            left: -4px;
+            padding: 2px 8px;
+            font-size: 16px;
+            color: white;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+<div class="container mx-auto p-4 md:p-8">
+    <nav class="flex justify-between items-center mb-6 md:mb-10">
+        <a href="/" class="text-2xl md:text-3xl font-bold text-gray-800 tracking-tight">Attendance System</a>
+        <a href="/main_menu" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition-colors duration-200">
+            Back to Menu
+        </a>
+    </nav>
+
+    <main class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="video-section">
+            <h1 class="text-3xl md:text-4xl font-extrabold text-center mb-4">
+                <span class="bg-clip-text text-transparent bg-gradient-to-r from-blue-500 to-green-500">Live Attendance</span>
+            </h1>
+            <p class="text-center text-gray-600 mb-6">Position yourself clearly in front of the camera to get your attendance marked.</p>
+
+            <div class="video-container" id="videoContainer">
+                <video id="videoElement" autoplay playsinline class="w-full"></video>
+                <div id="faceBoxes" class="absolute top-0 left-0 w-full h-full z-10"></div>
+            </div>
+            <p id="videoStatus" class="text-center text-gray-500 mt-4">Waiting for camera...</p>
+        </div>
+
+        <div class="log-section">
+            <div class="bg-white p-6 rounded-lg shadow-lg">
+                <h2 class="text-2xl font-bold text-center mb-4">Latest Attendance Log</h2>
+                <p id="logMessage" class="text-sm text-center text-gray-500 mb-4">Loading log...</p>
+                <ul id="attendanceLog" class="space-y-2">
+                    </ul>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const video = document.getElementById('videoElement');
+        const videoContainer = document.getElementById('videoContainer');
+        const faceBoxesContainer = document.getElementById('faceBoxes');
+        const videoStatus = document.getElementById('videoStatus');
+        const logList = document.getElementById('attendanceLog');
+        const logMessage = document.getElementById('logMessage');
+
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+                videoStatus.textContent = "Camera feed live.";
+            })
+            .catch(err => {
+                console.error("Error accessing webcam:", err);
+                videoStatus.textContent = "Error: Could not access your camera. Please ensure it's enabled and try again.";
+            });
+
+        function processFrame() {
+            if (!video.srcObject || video.videoWidth === 0) return;
+
+            const tempCanvas = document.createElement('canvas');
+            const tempContext = tempCanvas.getContext('2d');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            tempContext.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+
+            const imageData = tempCanvas.toDataURL('image/jpeg');
+
+            fetch('/process_frame', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageData })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(faces => {
+                drawFaces(faces);
+            })
+            .catch(error => {
+                console.error('Error processing frame:', error);
+                drawFaces([]);
+            });
+        }
+
+        function drawFaces(faces) {
+            faceBoxesContainer.innerHTML = ''; // Clear previous face boxes
+
+            if (faces.length === 0) {
+                const noFaceDiv = document.createElement('div');
+                noFaceDiv.textContent = 'No faces detected';
+                noFaceDiv.className = 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-gray-600 text-lg font-semibold';
+                faceBoxesContainer.appendChild(noFaceDiv);
+            }
+
+            faces.forEach(face => {
+                const [top, right, bottom, left] = face.location;
+                const color = face.color;
+                const name = face.name;
+
+                const box = document.createElement('div');
+                box.className = 'face-box';
+                box.style.borderColor = color;
+                box.style.left = `${left}px`;
+                box.style.top = `${top}px`;
+                box.style.width = `${right - left}px`;
+                box.style.height = `${bottom - top}px`;
+
+                const label = document.createElement('div');
+                label.className = 'label';
+                label.style.backgroundColor = color;
+                label.textContent = name;
+
+                box.appendChild(label);
+                faceBoxesContainer.appendChild(box);
+            });
+        }
+
+        function fetchAttendanceLog() {
+            fetch('/get_latest_attendance')
+                .then(response => response.json())
+                .then(log => {
+                    logList.innerHTML = '';
+                    if (log.length > 0) {
+                        logMessage.style.display = 'none';
+                        log.forEach(entry => {
+                            const li = document.createElement('li');
+                            li.className = 'flex justify-between items-center bg-gray-50 rounded-lg p-3 shadow-sm';
+                            
+                            const nameSpan = document.createElement('span');
+                            nameSpan.className = 'font-semibold text-lg';
+                            nameSpan.textContent = entry.name;
+
+                            const timeSpan = document.createElement('span');
+                            timeSpan.className = 'text-gray-500 text-sm';
+                            const date = new Date(entry.timestamp);
+                            timeSpan.textContent = date.toLocaleString();
+                            
+                            li.appendChild(nameSpan);
+                            li.appendChild(timeSpan);
+                            logList.appendChild(li);
+                        });
+                    } else {
+                        logMessage.textContent = "No attendance records found.";
+                        logMessage.style.display = 'block';
+                    }
+                })
+                .catch(error => console.error('Error fetching attendance log:', error));
+        }
+
+        setInterval(processFrame, 1000);
+        setInterval(fetchAttendanceLog, 5000);
+    });
+</script>
+
+</body>
+</html>
